@@ -9,6 +9,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import OpenAI from 'openai';
 import { config } from 'dotenv';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as https from 'https';
+import * as http from 'http';
+import { pipeline } from 'stream/promises';
+import { createWriteStream } from 'fs';
 
 // Load environment variables
 config();
@@ -403,6 +409,21 @@ Please provide detailed, actionable guidance.`;
     });
   }
 
+  private async downloadImage(url: string, filepath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const protocol = url.startsWith('https') ? https : http;
+      protocol.get(url, (response) => {
+        const stream = createWriteStream(filepath);
+        response.pipe(stream);
+        stream.on('finish', () => {
+          stream.close();
+          resolve();
+        });
+        stream.on('error', reject);
+      }).on('error', reject);
+    });
+  }
+
   private async handleImageGeneration(request: ImageGenerationRequest) {
     const { 
       prompt, 
@@ -433,11 +454,28 @@ Please provide detailed, actionable guidance.`;
 
       const imageUrls = response.data?.map(img => img.url).filter(url => url !== undefined) || [];
       
+      // Create directory for saved images
+      const imagesDir = path.join(process.env.HOME || '', 'chatgpt-images');
+      await fs.mkdir(imagesDir, { recursive: true });
+      
+      // Download and save images
+      const savedPaths: string[] = [];
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      
+      for (let i = 0; i < imageUrls.length; i++) {
+        const url = imageUrls[i];
+        const filename = `${timestamp}_${model}_${i + 1}.png`;
+        const filepath = path.join(imagesDir, filename);
+        
+        await this.downloadImage(url, filepath);
+        savedPaths.push(filepath);
+      }
+      
       return {
         content: [
           {
             type: 'text',
-            text: `🎨 Generated ${imageUrls.length} image(s) successfully!\n\n**Image URLs:**\n${imageUrls.map((url, i) => `${i + 1}. ${url}`).join('\n')}\n\n**Prompt:** "${prompt}"\n**Model:** ${model}\n**Size:** ${size}\n${model === 'dall-e-3' ? `**Quality:** ${quality}\n**Style:** ${style}` : ''}`
+            text: `🎨 Generated ${imageUrls.length} image(s) successfully!\n\n**Saved locally to:**\n${savedPaths.map((path, i) => `${i + 1}. ${path}`).join('\n')}\n\n**Image URLs:**\n${imageUrls.map((url, i) => `${i + 1}. ${url}`).join('\n')}\n\n**Prompt:** "${prompt}"\n**Model:** ${model}\n**Size:** ${size}\n${model === 'dall-e-3' ? `**Quality:** ${quality}\n**Style:** ${style}` : ''}`
           }
         ]
       };
